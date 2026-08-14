@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
+import io
 import os
 import subprocess
 import sys
@@ -8,6 +10,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from typing import Any
 
+import numpy as np
 import requests
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
@@ -78,6 +81,8 @@ class VLLMBackend:
             "use_beam_search": gconfig.use_beam_search,
             "stream": False,
         }
+        if req.metadata.get("return_routed_experts", False):
+            payload["routed_experts_prompt_start"] = max(len(req.input_ids) - 1, 0)
         if gconfig.stop:
             payload["stop"] = gconfig.stop
 
@@ -120,6 +125,25 @@ class VLLMBackend:
         meta_info = response["choices"][0]
         stop_reason = meta_info["finish_reason"]
 
+        def decode_array(field: str) -> np.ndarray | None:
+            encoded = meta_info.get(field)
+            if encoded is None:
+                return None
+            return np.load(io.BytesIO(base64.b64decode(encoded)), allow_pickle=False)
+
+        routed_experts = decode_array("routed_experts")
+        routed_expert_weights = decode_array("routed_expert_weights")
+        if (routed_experts is None) != (routed_expert_weights is None):
+            raise ValueError(
+                "vLLM response must return routed_experts and "
+                "routed_expert_weights together"
+            )
+        if (
+            routed_experts is not None
+            and routed_experts.shape != routed_expert_weights.shape
+        ):
+            raise ValueError("vLLM routed expert IDs and weights have different shapes")
+
         # Parse tokens from "token:123" format
         if "tokens" in meta_info["logprobs"]:
             output_tokens = meta_info["logprobs"]["tokens"]
@@ -137,11 +161,15 @@ class VLLMBackend:
                 output_tokens=[],
                 output_logprobs=[],
                 stop_reason=stop_reason,
+                routed_experts=routed_experts,
+                routed_expert_weights=routed_expert_weights,
             )
         return HttpGenerationResult(
             output_tokens=output_tokens,
             output_logprobs=output_logprobs,
             stop_reason=stop_reason,
+            routed_experts=routed_experts,
+            routed_expert_weights=routed_expert_weights,
         )
 
     def build_score_request(

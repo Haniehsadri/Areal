@@ -7,6 +7,7 @@ __all__ = [
     "DomainRouterWorkflow",
     "DomainRouterRolloutWorkflow",
     "DomainWorkflowSpec",
+    "RewardExpertSelectionWorkflow",
 ]
 
 _LAZY_IMPORTS = {
@@ -16,6 +17,7 @@ _LAZY_IMPORTS = {
     "DomainRouterWorkflow": "areal.workflow.domain_router",
     "DomainRouterRolloutWorkflow": "areal.workflow.domain_router",
     "DomainWorkflowSpec": "areal.workflow.domain_router",
+    "RewardExpertSelectionWorkflow": "areal.workflow.reward_expert_selection",
 }
 
 

@@ -4,7 +4,11 @@
 
 from __future__ import annotations
 
+import base64
+import io
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from areal.api.io_struct import (
     HttpGenerationResult,
@@ -52,6 +56,8 @@ class VLLMBridgeBackend:
             "use_beam_search": gconfig.use_beam_search,
             "stream": False,
         }
+        if req.metadata.get("return_routed_experts", False):
+            payload["routed_experts_prompt_start"] = max(len(req.input_ids) - 1, 0)
 
         if with_lora:
             lora_name = gconfig.lora_name
@@ -93,6 +99,17 @@ class VLLMBridgeBackend:
         meta_info = response["choices"][0]
         stop_reason = meta_info["finish_reason"]
 
+        def decode_array(field: str) -> np.ndarray | None:
+            encoded = meta_info.get(field)
+            if encoded is None:
+                return None
+            return np.load(io.BytesIO(base64.b64decode(encoded)), allow_pickle=False)
+
+        routed_experts = decode_array("routed_experts")
+        routed_expert_weights = decode_array("routed_expert_weights")
+        if (routed_experts is None) != (routed_expert_weights is None):
+            raise ValueError("vLLM returned incomplete routed-expert data")
+
         if "tokens" in meta_info["logprobs"]:
             output_tokens = [
                 int(token.split(":")[1]) for token in meta_info["logprobs"]["tokens"]
@@ -110,12 +127,16 @@ class VLLMBridgeBackend:
                 output_tokens=[],
                 output_logprobs=[],
                 stop_reason=stop_reason,
+                routed_experts=routed_experts,
+                routed_expert_weights=routed_expert_weights,
             )
 
         return HttpGenerationResult(
             output_tokens=output_tokens,
             output_logprobs=output_logprobs,
             stop_reason=stop_reason,
+            routed_experts=routed_experts,
+            routed_expert_weights=routed_expert_weights,
         )
 
     def get_pause_request(self) -> HttpRequest:

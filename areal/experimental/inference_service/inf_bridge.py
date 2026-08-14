@@ -194,6 +194,7 @@ class InfBridge:
         accumulated_versions: list[int] = []
         stop_reason: _StopReason | None = None
         final_routed_experts: np.ndarray | None = None
+        final_routed_expert_weights: np.ndarray | None = None
 
         t0 = time.monotonic()
 
@@ -231,6 +232,17 @@ class InfBridge:
                     final_routed_experts = np.concatenate(
                         [final_routed_experts, result.routed_experts], axis=0
                     )
+            if result.routed_expert_weights is not None:
+                if final_routed_expert_weights is None:
+                    final_routed_expert_weights = result.routed_expert_weights
+                else:
+                    final_routed_expert_weights = np.concatenate(
+                        [
+                            final_routed_expert_weights,
+                            result.routed_expert_weights,
+                        ],
+                        axis=0,
+                    )
 
             if stop_reason in ("stop", "tool_calls", "length"):
                 break
@@ -261,4 +273,5 @@ class InfBridge:
             tokenizer=req.tokenizer,
             latency=latency,
             routed_experts=final_routed_experts,
+            routed_expert_weights=final_routed_expert_weights,
         )

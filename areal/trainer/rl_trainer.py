@@ -1227,10 +1227,6 @@ class PPOTrainer:
                 base_gpu_id=0,
             )
         elif rollout_backend == "vllm":
-            if self.config.rollout.return_routed_experts:
-                raise ValueError(
-                    "return_routed_experts is not supported with vLLM backend. Please disable return_routed_experts or switch to SGLang backend."
-                )
             if lora_path is not None and self.config.actor.use_lora:
                 self.config.vllm.lora_modules = [
                     f"{self.config.gconfig.lora_name}-v0={lora_path}"
@@ -1241,6 +1237,8 @@ class PPOTrainer:
                 tp_size=self.rollout_alloc.parallel.tp_size,
                 pp_size=self.rollout_alloc.parallel.pp_size,
             )
+            if self.config.rollout.return_routed_experts:
+                server_args["enable_return_routed_experts"] = True
             # vLLM does not require LoRA paths during initialization.
             # LoRA is attached to generation requests.
         else:
@@ -1488,11 +1486,6 @@ class PPOTrainer:
                 "offload is enabled. Please set enable_offload=True."
             )
 
-        if rollout_backend == "vllm" and self.config.rollout.return_routed_experts:
-            raise ValueError(
-                "return_routed_experts is only supported with SGLang backend. "
-                "Please disable return_routed_experts or switch to SGLang backend."
-            )
         if (
             actor_backend == "megatron"
             and self.config.actor.use_lora

@@ -950,6 +950,7 @@ class RemoteInfEngine(InferenceEngine):
         accumulated_output_logprobs = []
         accumulated_versions = []
         accumulated_routed_experts: list[np.ndarray] = []
+        accumulated_routed_expert_weights: list[np.ndarray] = []
 
         # A single "rid" shares the same server to allow KV cache reuse
         if req.rid in self.rid_to_address:
@@ -1018,7 +1019,8 @@ class RemoteInfEngine(InferenceEngine):
             ):
                 if stop_reason != "abort":  # Only validate for successful generations
                     raise RuntimeError(
-                        "Requested return_routed_experts=True but received None from SGLang. "
+                        "Requested return_routed_experts=True but received no routing "
+                        f"data from {type(self.backend).__name__}. "
                         "This usually means the model is not a MoE (Mixture of Experts) model. "
                         "Please use a MoE model to get routed_experts information."
                     )
@@ -1032,6 +1034,10 @@ class RemoteInfEngine(InferenceEngine):
             # Accumulate routed_experts for MoE models
             if gen_result.routed_experts is not None:
                 accumulated_routed_experts.append(gen_result.routed_experts)
+                if gen_result.routed_expert_weights is not None:
+                    accumulated_routed_expert_weights.append(
+                        gen_result.routed_expert_weights
+                    )
 
             # Update request for next iteration
             req.input_ids += gen_result.output_tokens
@@ -1056,6 +1062,11 @@ class RemoteInfEngine(InferenceEngine):
             if accumulated_routed_experts
             else None
         )
+        accumulated_routed_expert_weights = (
+            np.concatenate(accumulated_routed_expert_weights)
+            if accumulated_routed_expert_weights
+            else None
+        )
 
         response = ModelResponse(
             input_tokens=req.input_ids[
@@ -1071,6 +1082,7 @@ class RemoteInfEngine(InferenceEngine):
             tokenizer=req.tokenizer,
             processor=req.processor,
             routed_experts=accumulated_routed_experts,
+            routed_expert_weights=accumulated_routed_expert_weights,
         )
         return response
 

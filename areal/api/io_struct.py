@@ -81,6 +81,8 @@ class ModelResponse:
 
     # MoE routing (only populated when return_routed_experts=True)
     routed_experts: np.ndarray | None = None
+    # Final logical gate weights aligned with routed_experts.
+    routed_expert_weights: np.ndarray | None = None
 
     @property
     def input_len(self) -> int:
@@ -392,6 +394,7 @@ class HttpGenerationResult:
     output_logprobs: list[float]
     stop_reason: str
     routed_experts: np.ndarray | None = None
+    routed_expert_weights: np.ndarray | None = None
 
 
 @dataclass
