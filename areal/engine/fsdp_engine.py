@@ -218,6 +218,10 @@ def _prepare_multimodal_forward_inputs(
 
 class FSDPEngine(TrainEngine):
     def __init__(self, config: TrainEngineConfig):
+        if config.use_esft:
+            raise NotImplementedError(
+                "ESFT is currently supported by MegatronEngine only"
+            )
         self.config = config
         self.optimizer_config = config.optimizer
 

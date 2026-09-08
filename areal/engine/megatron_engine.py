@@ -168,6 +168,12 @@ from areal.utils.data import (
     split_padded_tensor_dict_into_mb_list,
     unpad_logits,
 )
+from areal.utils.esft import (
+    ESFTApplyResult,
+    ESFTSelection,
+    apply_esft,
+    load_esft_config,
+)
 from areal.utils.functional import gather_logprobs, gather_logprobs_entropy
 from areal.utils.hf_utils import load_hf_processor_and_tokenizer, load_hf_tokenizer
 from areal.utils.lock import DistributedLock
@@ -383,6 +389,8 @@ class MegatronEngine(TrainEngine):
         self.processor = None
         self.awex_writer: AwexMegatronWriterAdapter | None = None
         self.lora_mode = self.config.use_lora or self.config.use_merged_lora
+        self.esft_selection: ESFTSelection | None = None
+        self.esft_apply_result: ESFTApplyResult | None = None
 
         self.released_tags: set[str] = set()
 
@@ -686,6 +694,68 @@ class MegatronEngine(TrainEngine):
             self._check_and_apply_fp8_config()
             self._validate_fp8_consistency()
 
+            pre_wrap_model_transform = None
+            if self.config.use_esft:
+                if self.config.is_critic:
+                    raise ValueError("ESFT is only supported for actor/SFT models")
+                if self.bridge_cls != "mbridge":
+                    raise NotImplementedError(
+                        "ESFT currently requires megatron.bridge_type='mbridge' so "
+                        "expert trainability can be applied before DDP wrapping"
+                    )
+                num_experts = getattr(self.tf_config, "num_moe_experts", None)
+                if not isinstance(num_experts, int) or num_experts <= 0:
+                    raise ValueError("ESFT requires a model with num_moe_experts > 0")
+                assert self.config.esft_config is not None
+                self.esft_selection = load_esft_config(
+                    self.config.esft_config,
+                    num_transformer_layers=self.tf_config.num_layers,
+                    num_experts=num_experts,
+                    model_architectures=getattr(self.hf_config, "architectures", None),
+                )
+
+                def apply_before_ddp(models: list[nn.Module]) -> None:
+                    assert self.esft_selection is not None
+                    result = apply_esft(
+                        (
+                            parameter
+                            for model in models
+                            for parameter in model.parameters()
+                        ),
+                        get_named_parameters(
+                            models[0] if len(models) == 1 else models,
+                            num_experts,
+                        ),
+                        self.esft_selection,
+                    )
+                    if self.esft_apply_result is None:
+                        self.esft_apply_result = result
+                    else:
+                        previous = self.esft_apply_result
+                        self.esft_apply_result = ESFTApplyResult(
+                            matched_experts=(
+                                previous.matched_experts | result.matched_experts
+                            ),
+                            matched_components=(
+                                previous.matched_components | result.matched_components
+                            ),
+                            trainable_parameter_names=tuple(
+                                dict.fromkeys(
+                                    previous.trainable_parameter_names
+                                    + result.trainable_parameter_names
+                                )
+                            ),
+                            trainable_parameters=(
+                                previous.trainable_parameters
+                                + result.trainable_parameters
+                            ),
+                            total_parameters=(
+                                previous.total_parameters + result.total_parameters
+                            ),
+                        )
+
+                pre_wrap_model_transform = apply_before_ddp
+
             # Warn once if bridge-delegated weight sync was requested but a
             # fallback condition forces the registry conversion path (the
             # dispatch in _update_weights_from_distributed silently falls back).
@@ -713,9 +783,13 @@ class MegatronEngine(TrainEngine):
                     bridge_type=self.bridge_cls,
                     is_critic=self.config.is_critic,
                     use_lora=self.lora_mode,
+                    pre_wrap_model_transform=pre_wrap_model_transform,
                 )
 
         self.model = _MegatronModelList(models)
+
+        if self.config.use_esft:
+            self._validate_esft_application()
 
         if self.config.use_lora:
             self._apply_megatron_bridge_lora()
@@ -804,6 +878,97 @@ class MegatronEngine(TrainEngine):
         model_config.finalize_model_grads_func = finalize_model_grads
         self._create_optimizer(ft_spec)
         self._initialized = True
+
+    def _validate_esft_application(self) -> None:
+        """Validate selected-expert coverage across all PP/EP/DP ranks."""
+
+        assert self.esft_selection is not None
+        assert self.esft_apply_result is not None
+        requested = tuple(sorted(self.esft_selection.expert_keys))
+        local_components = tuple(sorted(self.esft_apply_result.matched_components))
+        local_trainable_parameters = self.esft_apply_result.trainable_parameters
+        parallel_coordinate = (
+            mpu.get_pipeline_model_parallel_rank(),
+            mpu.get_tensor_model_parallel_rank(),
+            mpu.get_expert_model_parallel_rank(),
+            mpu.get_expert_tensor_parallel_rank(),
+        )
+        world_size = dist.get_world_size(group=self._cpu_group)
+        gathered: list[tuple[Any, ...] | None] = [None] * world_size
+        dist.all_gather_object(
+            gathered,
+            (
+                requested,
+                local_components,
+                local_trainable_parameters,
+                parallel_coordinate,
+            ),
+            group=self._cpu_group,
+        )
+        if any(item is None or item[0] != requested for item in gathered):
+            raise RuntimeError("ESFT configuration differs across distributed ranks")
+        signatures_by_coordinate: dict[tuple[int, ...], set[tuple[Any, ...]]] = {}
+        for item in gathered:
+            assert item is not None
+            signatures_by_coordinate.setdefault(item[3], set()).add((item[1], item[2]))
+        inconsistent_replicas = {
+            coordinate: signatures
+            for coordinate, signatures in signatures_by_coordinate.items()
+            if len(signatures) != 1
+        }
+        if inconsistent_replicas:
+            raise RuntimeError(
+                "ESFT trainability differs across data/context-parallel replicas: "
+                f"{inconsistent_replicas}"
+            )
+        globally_matched_components = {
+            component for item in gathered if item is not None for component in item[1]
+        }
+        globally_matched = {
+            (layer_id, expert_id)
+            for layer_id, expert_id, _ in globally_matched_components
+        }
+        missing = sorted(self.esft_selection.expert_keys - globally_matched)
+        if missing:
+            raise ValueError(
+                f"ESFT selected experts were not found in the training model: {missing}"
+            )
+        if not globally_matched:
+            raise ValueError("ESFT did not match any trainable expert parameters")
+        incomplete = []
+        for layer_id, expert_id in requested:
+            components = {
+                component
+                for matched_layer, matched_expert, component in globally_matched_components
+                if matched_layer == layer_id and matched_expert == expert_id
+            }
+            if "linear_fc1" not in components or "linear_fc2" not in components:
+                incomplete.append((layer_id, expert_id, sorted(components)))
+        if incomplete:
+            raise ValueError(
+                "ESFT selected experts do not contain complete FC1/FC2 parameters: "
+                f"{incomplete}"
+            )
+        empty_ranks = [
+            rank
+            for rank, item in enumerate(gathered)
+            if item is not None and item[2] == 0
+        ]
+        if empty_ranks:
+            raise ValueError(
+                "ESFT leaves distributed ranks with no trainable parameters; select "
+                f"experts covering every PP/EP rank or reduce parallelism: {empty_ranks}"
+            )
+        result = self.esft_apply_result
+        self.logger.info(
+            "Applied ESFT selection from %s: local matched experts=%s, "
+            "trainable parameters=%s/%s (%.4f%%)",
+            self.esft_selection.source,
+            len(result.matched_experts),
+            result.trainable_parameters,
+            result.total_parameters,
+            100.0 * result.trainable_parameters / max(result.total_parameters, 1),
+        )
 
     def _build_glu_fc1_names(self) -> set[str]:
         """Detect which `linear_fc1` parameters belong to GLU MLPs.

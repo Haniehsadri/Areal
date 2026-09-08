@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -309,8 +310,16 @@ def make_mcore_model(
     bridge_type: str = "mbridge",
     is_critic: bool = False,
     use_lora: bool = False,
+    pre_wrap_model_transform: Callable[[list[torch.nn.Module]], None] | None = None,
 ) -> list[GPTModel | DDP]:
     if bridge is not None and bridge_type == "mbridge":
+        callback_kwargs = {}
+        if pre_wrap_model_transform is not None:
+
+            def transform_before_wrap(model: torch.nn.Module, **_kwargs) -> None:
+                pre_wrap_model_transform([model])
+
+            callback_kwargs["post_model_creation_callbacks"] = [transform_before_wrap]
         models = bridge.get_model(
             # TODO: Add DDP options when supporting training
             wrap_with_ddp=mcore_config.wrap_with_ddp,
@@ -321,6 +330,7 @@ def make_mcore_model(
             bf16=tf_config.bf16,
             use_precision_aware_optimizer=mcore_config.use_precision_aware_optimizer,
             overlap_param_gather_with_optimizer_step=mcore_config.overlap_param_gather_with_optimizer_step,
+            **callback_kwargs,
         )
         models = list(models)
 
@@ -333,6 +343,11 @@ def make_mcore_model(
         return models
 
     if bridge is not None and bridge_type == "megatron-bridge":
+        if pre_wrap_model_transform is not None:
+            raise NotImplementedError(
+                "ESFT pre-wrap selection is not yet supported with "
+                "bridge_type='megatron-bridge'; use bridge_type='mbridge'"
+            )
         provider = bridge.to_megatron_provider(load_weights=False)
         vpp_size = mcore_config.virtual_pipeline_parallel_size or 0
 
@@ -546,6 +561,9 @@ def make_mcore_model(
         # Replace output_layer with ValueHead for critic models
         if is_critic:
             _replace_output_layer_with_value_head(model, tf_config)
+
+        if pre_wrap_model_transform is not None:
+            pre_wrap_model_transform([model])
 
         if mcore_config.wrap_with_ddp:
             ddp_config = MCoreDDPConfig(**dataclasses.asdict(mcore_config.ddp))

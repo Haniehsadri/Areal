@@ -1232,6 +1232,19 @@ class TrainEngineConfig:
     megatron: MegatronEngineConfig = field(default_factory=MegatronEngineConfig)
     mindspeed: MindSpeedEngineConfig = field(default_factory=MindSpeedEngineConfig)
 
+    # ESFT
+    use_esft: bool = field(
+        default=False,
+        metadata={
+            "help": "Freeze the model and train only experts selected by ESFT. "
+            "Currently supported by the Megatron engine."
+        },
+    )
+    esft_config: str | None = field(
+        default=None,
+        metadata={"help": "Path to an inference-generated ESFT configuration."},
+    )
+
     # offload
     offload: bool = field(
         default=False,
@@ -1336,6 +1349,10 @@ class TrainEngineConfig:
         """Validate scheduling_spec length and config combinations."""
         if self.use_lora and self.use_merged_lora:
             raise ValueError("use_lora and use_merged_lora are mutually exclusive")
+        if self.use_esft and (self.use_lora or self.use_merged_lora):
+            raise ValueError("ESFT and LoRA training modes are mutually exclusive")
+        if self.use_esft and not self.esft_config:
+            raise ValueError("esft_config is required when use_esft=True")
         if len(self.scheduling_spec) not in (1, 2):
             raise ValueError(
                 f"scheduling_spec must contain 1 or 2 SchedulingSpec, "

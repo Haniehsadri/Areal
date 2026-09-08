@@ -1353,21 +1353,42 @@ def get_named_parameters(model_module, num_experts):
         if config is None:
             raise AttributeError("Megatron module does not expose transformer config")
 
-        vp_stage = getattr(single_module, "virtual_pipeline_model_parallel_rank", None)
-        if vp_stage is None and hasattr(single_module, "module"):
+        vp_stage = getattr(single_module, "vp_stage", None)
+        if vp_stage is None:
             vp_stage = getattr(
-                single_module.module, "virtual_pipeline_model_parallel_rank", None
+                single_module, "virtual_pipeline_model_parallel_rank", None
             )
+        if vp_stage is None and hasattr(single_module, "module"):
+            vp_stage = getattr(single_module.module, "vp_stage", None)
+            if vp_stage is None:
+                vp_stage = getattr(
+                    single_module.module,
+                    "virtual_pipeline_model_parallel_rank",
+                    None,
+                )
         if vp_stage is None:
             try:
                 vp_stage = mpu.get_virtual_pipeline_model_parallel_rank()
             except AssertionError:
                 vp_stage = None
 
-        layer_offset = get_transformer_layer_offset(config)
+        original_vp_stage = None
+        restore_vp_stage = vp_stage is not None
+        if restore_vp_stage:
+            try:
+                original_vp_stage = mpu.get_virtual_pipeline_model_parallel_rank()
+            except AssertionError:
+                original_vp_stage = None
+            mpu.set_virtual_pipeline_model_parallel_rank(vp_stage)
+        try:
+            layer_offset = get_transformer_layer_offset(config)
+        finally:
+            if restore_vp_stage:
+                mpu.set_virtual_pipeline_model_parallel_rank(original_vp_stage)
         for name, param in single_module.named_parameters():
-            # for model without ddp wrap
-            if not name.startswith("module.module."):
+            # Normalize both raw models and DDP-wrapped models to the canonical
+            # ``module.module.`` prefix used by weight conversion and ESFT.
+            while not name.startswith("module.module."):
                 name = "module." + name
 
             # Match either text-only (module.module.decoder.layers.X) or VLM
@@ -1453,18 +1474,14 @@ def get_named_parameters(model_module, num_experts):
             original_vp_rank = None
             vp_world = None
 
-        for vpp_rank, single_module in enumerate(model_module):
+        try:
+            for vpp_rank, single_module in enumerate(model_module):
+                if vp_world and vp_world > 1:
+                    mpu.set_virtual_pipeline_model_parallel_rank(vpp_rank)
+                yield from _iter_single(single_module)
+        finally:
             if vp_world and vp_world > 1:
-                mpu.set_virtual_pipeline_model_parallel_rank(vpp_rank)
-            yield from _iter_single(single_module)
-
-        if (
-            vp_world
-            and vp_world > 1
-            and original_vp_rank is not None
-            and original_vp_rank >= 0
-        ):
-            mpu.set_virtual_pipeline_model_parallel_rank(original_vp_rank)
+                mpu.set_virtual_pipeline_model_parallel_rank(original_vp_rank)
         return
 
     yield from _iter_single(model_module)

@@ -149,6 +149,10 @@ class ArchonEngine(TrainEngine):
 
     def __init__(self, config: TrainEngineConfig):
         # Configuration (immutable after init)
+        if config.use_esft:
+            raise NotImplementedError(
+                "ESFT is currently supported by MegatronEngine only"
+            )
         self.config = config
         self.optimizer_config = config.optimizer
         self.enable_tree_training = config.enable_tree_training
