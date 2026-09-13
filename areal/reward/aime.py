@@ -1,18 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 from areal.utils import logging
 
-from . import get_math_verify_worker
+from . import get_thinking_math_verify_worker
 
-logger = logging.getLogger("AIMEReward")
+logger = logging.getLogger("RewardUtils")
 
 
 def aime_reward_fn(
-    prompt, completions, prompt_ids, completion_ids, answer, **kwargs
+    prompt: str,
+    completions: str,
+    prompt_ids: list[int],
+    completion_ids: list[int],
+    answer: str | int | None = None,
+    **kwargs: Any,
 ) -> float:
+    """Score the final mathematical answer, excluding completed thinking blocks."""
+    if answer is None or not str(answer).strip():
+        return 0.0
     try:
-        worker = get_math_verify_worker()
-        return worker.verify(str(completions), str(answer))
+        return get_thinking_math_verify_worker().verify(str(completions), str(answer))
     except Exception:
-        logger.warning("Exception in aime reward function", exc_info=True)
+        logger.warning("Exception in aime_reward_fn", exc_info=True)
         return 0.0

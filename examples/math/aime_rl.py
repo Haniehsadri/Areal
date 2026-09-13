@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import sys
 
 from areal import PPOTrainer
@@ -8,39 +10,31 @@ from areal.utils.hf_utils import load_hf_tokenizer
 
 def main(args):
     config, _ = load_expr_config(args, GRPOConfig)
+    if config.rollout.teacher:
+        raise ValueError("This AIME entry point supports RLVR, not teacher distillation.")
     tokenizer = load_hf_tokenizer(config.tokenizer_path)
-
     train_dataset = get_custom_dataset(
-        split="train",
-        dataset_config=config.train_dataset,
-        tokenizer=tokenizer,
+        dataset_config=config.train_dataset, tokenizer=tokenizer
     )
     valid_dataset = get_custom_dataset(
-        split="test",
-        dataset_config=config.valid_dataset,
-        tokenizer=tokenizer,
+        dataset_config=config.valid_dataset, tokenizer=tokenizer
     )
-
+    workflow = "areal.workflow.rlvr.RLVRWorkflow"
     workflow_kwargs = dict(
         reward_fn="areal.reward.aime.aime_reward_fn",
         gconfig=config.gconfig,
         tokenizer=config.tokenizer_path,
-        enable_thinking=False,
+        enable_thinking=True,
     )
     eval_workflow_kwargs = workflow_kwargs.copy()
     eval_workflow_kwargs["gconfig"] = config.gconfig.new(temperature=0.6)
-
-    workflow = "areal.workflow.rlvr.RLVRWorkflow"
-
     with PPOTrainer(
-        config,
-        train_dataset=train_dataset,
-        valid_dataset=valid_dataset,
+        config, train_dataset=train_dataset, valid_dataset=valid_dataset
     ) as trainer:
         trainer.train(
             workflow=workflow,
             workflow_kwargs=workflow_kwargs,
-            eval_workflow="areal.workflow.rlvr.RLVRWorkflow",
+            eval_workflow=workflow,
             eval_workflow_kwargs=eval_workflow_kwargs,
         )
 

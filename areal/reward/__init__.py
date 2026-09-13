@@ -91,7 +91,33 @@ class MathVerifyWorker:
             return 0.0
 
 
+class ThinkingMathVerifyWorker(MathVerifyWorker):
+    """Verify final answers after reasoning, using the current parser API."""
+
+    def __init__(self, **kwargs):
+        super().__init__(try_extract_without_anchor=False, **kwargs)
+
+    def verify(self, response: str, ground_truth: str) -> float:
+        if "</think>" in response:
+            response = response.rsplit("</think>", 1)[-1]
+        elif "<think>" in response:
+            # An unfinished reasoning block is not a final answer.
+            return 0.0
+        gold = ground_truth.strip()
+        if "\\boxed" not in gold:
+            gold = f"\\boxed{{{gold}}}"
+        return super().verify(response, gold)
+
+
+_THINKING_MATH_VERIFY_WORKER: ThinkingMathVerifyWorker | None = None
 _MATH_VERIFY_WORKER: MathVerifyWorker | None = None
+
+
+def get_thinking_math_verify_worker() -> ThinkingMathVerifyWorker:
+    global _THINKING_MATH_VERIFY_WORKER
+    if _THINKING_MATH_VERIFY_WORKER is None:
+        _THINKING_MATH_VERIFY_WORKER = ThinkingMathVerifyWorker()
+    return _THINKING_MATH_VERIFY_WORKER
 
 
 def get_math_verify_worker() -> MathVerifyWorker:
@@ -103,6 +129,9 @@ def get_math_verify_worker() -> MathVerifyWorker:
 
 __all__ = [
     "MathVerifyWorker",
+    "ThinkingMathVerifyWorker",
+    "get_thinking_math_verify_worker",
+    "aime_reward_fn",
     "get_math_verify_worker",
     "gsm8k_reward_fn",
     "geometry3k_reward_fn",
@@ -111,6 +140,7 @@ __all__ = [
 
 
 _LAZY_IMPORTS = {
+    "aime_reward_fn": "areal.reward.aime",
     "gsm8k_reward_fn": "areal.reward.gsm8k",
     "geometry3k_reward_fn": "areal.reward.geometry3k",
     "clevr_count_70k_reward_fn": "areal.reward.clevr_count_70k",
