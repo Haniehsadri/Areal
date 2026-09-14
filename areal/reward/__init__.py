@@ -92,21 +92,42 @@ class MathVerifyWorker:
 
 
 class ThinkingMathVerifyWorker(MathVerifyWorker):
-    """Verify final answers after reasoning, using the current parser API."""
+    """Preserve the supplied AIME math_metric scoring and preprocessing."""
 
-    def __init__(self, **kwargs):
-        super().__init__(try_extract_without_anchor=False, **kwargs)
+    def __init__(self, try_extract_without_anchor=False, precision: int = 6):
+        from math_verify.metric import math_metric
+
+        self.verify_func = math_metric(
+            gold_extraction_target=(
+                ExprExtractionConfig(
+                    try_extract_without_anchor=try_extract_without_anchor
+                ),
+                LatexExtractionConfig(),
+            ),
+            pred_extraction_target=(
+                ExprExtractionConfig(
+                    try_extract_without_anchor=try_extract_without_anchor
+                ),
+                LatexExtractionConfig(),
+            ),
+            precision=precision,
+        )
 
     def verify(self, response: str, ground_truth: str) -> float:
-        if "</think>" in response:
-            response = response.rsplit("</think>", 1)[-1]
-        elif "<think>" in response:
-            # An unfinished reasoning block is not a final answer.
+        # ground_truth_parsable = "\\boxed{" + ground_truth + "}"
+        try:
+            response = response or ""
+            if "</think>" in response:
+                response = response.split("</think>", 1)[-1]
+            boxed_ground_truth = f"\\boxed{{{ground_truth}}}"
+            ret_score, _ = self.verify_func([boxed_ground_truth], [response])
+            return float(ret_score)
+        except Exception:
+            logger.warning(
+                f"Exception in MathVerifyWorker.verify for response={response} and ground_truth={ground_truth}",
+                exc_info=True,
+            )
             return 0.0
-        gold = ground_truth.strip()
-        if "\\boxed" not in gold:
-            gold = f"\\boxed{{{gold}}}"
-        return super().verify(response, gold)
 
 
 _THINKING_MATH_VERIFY_WORKER: ThinkingMathVerifyWorker | None = None

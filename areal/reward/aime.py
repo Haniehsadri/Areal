@@ -18,8 +18,6 @@ def aime_reward_fn(
     **kwargs: Any,
 ) -> float:
     """Score the final mathematical answer, excluding completed thinking blocks."""
-    if answer is None or not str(answer).strip():
-        return 0.0
     try:
         return get_thinking_math_verify_worker().verify(str(completions), str(answer))
     except Exception:
