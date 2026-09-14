@@ -11,12 +11,27 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from torch import nn
+
+
+def configure_esft_megatron(config: Any, *, use_esft: bool) -> Any:
+    """Use the legacy ESFT optimizer mode without mutating shared FFT config."""
+    if not use_esft:
+        return config
+    config = deepcopy(config)
+    config.ddp.use_distributed_optimizer = False
+    config.ddp.overlap_grad_reduce = False
+    config.ddp.overlap_param_gather = False
+    config.ddp.align_param_gather = False
+    config.overlap_param_gather_with_optimizer_step = False
+    config.use_precision_aware_optimizer = False
+    return config
 
 _EXPERT_PARAMETER_RE = re.compile(
     r"^module\.module\.(?:language_model\.)?decoder\.layers\.(\d+)\."

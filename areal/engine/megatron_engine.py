@@ -172,6 +172,7 @@ from areal.utils.esft import (
     ESFTApplyResult,
     ESFTSelection,
     apply_esft,
+    configure_esft_megatron,
     load_esft_config,
 )
 from areal.utils.functional import gather_logprobs, gather_logprobs_entropy
@@ -339,8 +340,24 @@ class MegatronEngine(TrainEngine):
         self.dtype = getattr(torch, self.config.dtype)
         self.device = None
         self.optimizer_config = config.optimizer
-        self.mcore_config = config.megatron
+        self.mcore_config = configure_esft_megatron(
+            config.megatron, use_esft=config.use_esft
+        )
         self.mindspeed_config = config.mindspeed
+        if config.use_esft:
+            if self.mindspeed_config.swap_optimizer:
+                raise ValueError(
+                    "ESFT uses a non-distributed optimizer; set "
+                    "actor.mindspeed.swap_optimizer=false."
+                )
+            if (
+                self.optimizer_config is not None
+                and self.optimizer_config.type == "adam_bf16"
+            ):
+                raise ValueError(
+                    "ESFT uses a non-distributed optimizer; use "
+                    "actor.optimizer.type=adam instead of adam_bf16."
+                )
         self.parallel_strategy = None
         self.optimizer = None
         self.lr_scheduler = None
@@ -1254,7 +1271,7 @@ class MegatronEngine(TrainEngine):
                 if self.checkpointer is None:
                     raise NotImplementedError(
                         "DCP checkpoint save is not available for this Megatron configuration "
-                        "(e.g., LoRA path without distributed optimizer support). "
+                        "(e.g., ESFT or LoRA without distributed optimizer support). "
                         "Please use weight_format='hf' for adapter/full-model export."
                     )
                 self.checkpointer.save_checkpoint(
@@ -1275,7 +1292,7 @@ class MegatronEngine(TrainEngine):
                 if self.checkpointer is None:
                     raise NotImplementedError(
                         "DCP checkpoint load is not available for this Megatron configuration "
-                        "(e.g., LoRA path without distributed optimizer support). "
+                        "(e.g., ESFT or LoRA without distributed optimizer support). "
                         "Please use weight_format='hf' for adapter/full-model load."
                     )
                 self.checkpointer.load_checkpoint(
@@ -2189,7 +2206,9 @@ class MegatronEngine(TrainEngine):
         assert self.model is not None and len(self.model) > 0
 
         use_distributed_optimizer = (
-            False if self.lora_mode else self.mcore_config.ddp.use_distributed_optimizer
+            False
+            if self.lora_mode or self.config.use_esft
+            else self.mcore_config.ddp.use_distributed_optimizer
         )
 
         assert self.optimizer_config.type in [
@@ -2261,8 +2280,9 @@ class MegatronEngine(TrainEngine):
         )
         self.lr_scheduler = lr_scheduler
 
-        # MegatronCheckpointManager now only support distributed optimizer which lora does not support
-        if not self.lora_mode:
+        # Legacy ESFT and LoRA use a non-distributed optimizer. DCP requires
+        # the distributed optimizer; HF model export remains available.
+        if not self.lora_mode and not self.config.use_esft:
             self.checkpointer = MegatronCheckpointManager(
                 model=self.model,
                 optimizer=self.optimizer,

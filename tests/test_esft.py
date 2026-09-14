@@ -7,12 +7,39 @@ import pytest
 import torch
 
 from areal.api.cli_args import TrainEngineConfig
-from areal.utils.esft import apply_esft, load_esft_config
+from areal.utils.esft import apply_esft, configure_esft_megatron, load_esft_config
 from areal.utils.reward_expert_selection import (
     ExpertScoreResult,
     RoutingMetadata,
     write_selection_artifacts,
 )
+
+
+@pytest.mark.parametrize("distributed", [True, False])
+def test_esft_optimizer_mode_is_isolated_from_fft(distributed):
+    """ESFT disables distributed optimizer settings without changing FFT."""
+    original = TrainEngineConfig().megatron
+    original.ddp.use_distributed_optimizer = distributed
+    original.ddp.overlap_grad_reduce = True
+    original.ddp.overlap_param_gather = True
+    original.ddp.align_param_gather = True
+    original.overlap_param_gather_with_optimizer_step = True
+    original.use_precision_aware_optimizer = True
+    effective = configure_esft_megatron(original, use_esft=True)
+    assert effective is not original
+    assert not effective.ddp.use_distributed_optimizer
+    assert not effective.ddp.overlap_grad_reduce
+    assert not effective.ddp.overlap_param_gather
+    assert not effective.ddp.align_param_gather
+    assert not effective.overlap_param_gather_with_optimizer_step
+    assert not effective.use_precision_aware_optimizer
+    assert original.ddp.use_distributed_optimizer == distributed
+    assert original.ddp.overlap_grad_reduce
+    assert original.ddp.overlap_param_gather
+    assert original.ddp.align_param_gather
+    assert original.overlap_param_gather_with_optimizer_step
+    assert original.use_precision_aware_optimizer
+    assert configure_esft_megatron(original, use_esft=False) is original
 
 
 def _write_config(tmp_path, *, experts, routing_metadata=None):
